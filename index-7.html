@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conversor de extractos bancarios a Excel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --ink:#1c2733;
+  --paper:#f5f6f4;
+  --card:#ffffff;
+  --line:#dde2e0;
+  --ledger:#1f6f54;
+  --ledger-soft:#e7f2ed;
+  --debit:#a53f2b;
+  --credit:#1f6f54;
+  --muted:#6b7680;
+  --amber:#b07f1a;
+  --amber-soft:#faf3e2;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;font-size:15px;line-height:1.5}
+.wrap{max-width:960px;margin:0 auto;padding:32px 20px 80px}
+header{border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:28px}
+.eyebrow{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+h1{font-family:'Spectral',serif;font-weight:600;font-size:clamp(26px,4vw,36px);line-height:1.15}
+h1 em{font-style:normal;color:var(--ledger)}
+.sub{margin-top:10px;color:var(--muted);max-width:640px}
+.privacy{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-size:12.5px;font-family:'JetBrains Mono',monospace;color:var(--ledger);background:var(--ledger-soft);padding:4px 10px;border-radius:3px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:22px;margin-bottom:18px}
+.panel h2{font-family:'Spectral',serif;font-size:18px;font-weight:600;margin-bottom:14px}
+label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+select{width:100%;max-width:360px;padding:10px 12px;border:1px solid var(--line);border-radius:4px;font-family:'Inter',sans-serif;font-size:14px;background:#fff;color:var(--ink)}
+.drop{margin-top:16px;border:2px dashed var(--line);border-radius:6px;padding:36px 20px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--ledger);background:var(--ledger-soft)}
+.drop p{color:var(--muted);font-size:14px}
+.drop strong{color:var(--ink)}
+.drop input{display:none}
+.btn{display:inline-block;border:none;border-radius:4px;padding:11px 22px;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--ledger);color:#fff}
+.btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.status{font-family:'JetBrains Mono',monospace;font-size:13px;margin-top:14px;color:var(--muted);white-space:pre-line}
+/* cinta de validación */
+.tape{display:none;margin-bottom:18px;background:var(--ink);color:#eef2ee;border-radius:6px;padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:13px}
+.tape .row{display:flex;flex-wrap:wrap;gap:8px 28px;align-items:baseline}
+.tape .lbl{color:#93a2ad;font-size:11px;text-transform:uppercase;letter-spacing:.1em}
+.tape .val{font-size:15px}
+.tape .ok{color:#6fd0a5}
+.tape .bad{color:#f0a08c}
+.warnbox{display:none;background:var(--amber-soft);border:1px solid #e3cf9a;border-radius:6px;padding:14px 18px;margin-bottom:18px;font-size:13.5px;color:#6b5410}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{font-family:'JetBrains Mono',monospace;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;text-align:left;color:var(--muted);border-bottom:2px solid var(--ink);padding:8px 8px}
+tbody td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+td.num{font-family:'JetBrains Mono',monospace;text-align:right;white-space:nowrap}
+td.debit{color:var(--debit)}
+td.credit{color:var(--credit)}
+.tblwrap{overflow-x:auto;display:none}
+.actions{display:none;gap:12px;margin:18px 0}
+.count{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);margin-top:10px}
+footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:16px}
+@media(max-width:600px){.panel{padding:16px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">Herramienta pública · Estudio Kern</div>
+  <h1>Extracto bancario PDF <em>→</em> Excel</h1>
+  <p class="sub">Convertí resúmenes bancarios digitales al formato de trabajo (cuenta, fecha, descripción, importe, saldo, imputación). Sin inteligencia artificial: el análisis se hace por reglas, con verificación de saldos.</p>
+  <span class="privacy">⛨ El PDF nunca sale de tu navegador — nada se sube a ningún servidor</span>
+</header>
+
+<div class="panel">
+  <h2>1 · Elegí el banco y subí el PDF</h2>
+  <label for="bank">Banco</label>
+  <select id="bank">
+    <option value="auto">Detectar automáticamente</option>
+    <option value="galicia">Banco Galicia</option>
+    <option value="santander">Banco Santander</option>
+    <option value="bbva">BBVA</option>
+    <option value="brubank">Brubank</option>
+    <option value="supervielle">Banco Supervielle</option>
+    <option value="ciudad">Banco Ciudad</option>
+    <option value="provincia">Banco Provincia</option>
+    <option value="nacion">Banco Nación</option>
+    <option value="icbc">ICBC</option>
+  </select>
+  <div class="drop" id="drop">
+    <input type="file" id="file" accept="application/pdf" multiple>
+    <p><strong>Arrastrá el PDF acá</strong> o tocá para elegirlo<br>Sirve el resumen digital del homebanking (con texto seleccionable). Escaneos o fotos: no.</p>
+  </div>
+  <div class="status" id="status"></div>
+</div>
+
+<div class="tape" id="tape">
+  <div class="row">
+    <span><span class="lbl">Saldo inicial</span><br><span class="val" id="t-ini">—</span></span>
+    <span><span class="lbl">Créditos</span><br><span class="val" id="t-cred">—</span></span>
+    <span><span class="lbl">Débitos</span><br><span class="val" id="t-deb">—</span></span>
+    <span><span class="lbl">Saldo final calculado</span><br><span class="val" id="t-calc">—</span></span>
+    <span><span class="lbl">Saldo final del PDF</span><br><span class="val" id="t-pdf">—</span></span>
+    <span><span class="lbl">Control</span><br><span class="val" id="t-ok">—</span></span>
+  </div>
+</div>
+
+<div class="warnbox" id="warnbox"></div>
+
+<div class="panel" id="resultpanel" style="display:none">
+  <h2>2 · Revisá y descargá</h2>
+  <div class="actions" id="actions" style="display:flex">
+    <button class="btn btn-primary" id="dl">Descargar Excel</button>
+    <button class="btn btn-ghost" id="clear">Limpiar</button>
+  </div>
+  <div class="tblwrap" id="tblwrap">
+    <table>
+      <thead><tr><th>cuenta</th><th>fecha</th><th>descripcion</th><th>detalle</th><th>importe</th><th>saldo</th><th>tipo_movimiento</th><th>fuente</th><th>imputacion</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+  <div class="count" id="count"></div>
+</div>
+
+<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste.</footer>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+/* ---------- utilidades de números AR ---------- */
+function parseAR(s){
+  if(!s) return null;
+  s = s.trim();
+  let neg = false;
+  if(/^\(.*\)$/.test(s)){ neg = true; s = s.slice(1,-1); }
+  if(/-\s*$/.test(s)){ neg = true; s = s.replace(/-\s*$/,''); }
+  if(/^-/.test(s)){ neg = true; s = s.replace(/^-/,''); }
+  s = s.replace(/\$/g,'').replace(/\s/g,'');
+  if(!/^\d{1,3}(\.\d{3})*(,\d{1,2})?$|^\d+(,\d{1,2})?$/.test(s)) return null;
+  const v = parseFloat(s.replace(/\./g,'').replace(',','.'));
+  return neg ? -v : v;
+}
+function fmtAR(v){
+  return v.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+const NUM_RE = /-?\(?\$?\s?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})\)?-?/g;
+const DATE_RE = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/;
+
+/* ---------- configuración por banco ---------- */
+const BANKS = {
+  galicia:    {name:'Banco Galicia',    keys:['banco galicia','galicia','bco. galicia'], saldoIni:['saldo anterior','saldo inicial','saldo al inicio']},
+  santander:  {name:'Banco Santander',  keys:['santander'], saldoIni:['saldo anterior','saldo inicial','saldo ultimo resumen','saldo último resumen']},
+  bbva:       {name:'BBVA',             keys:['bbva','banco frances','banco francés'], saldoIni:['saldo anterior','saldo inicial','saldo al']},
+  brubank:    {name:'Brubank',          keys:['brubank'], saldoIni:['saldo inicial','saldo anterior']},
+  supervielle:{name:'Banco Supervielle',keys:['supervielle'], saldoIni:['saldo anterior','saldo inicial']},
+  ciudad:     {name:'Banco Ciudad',     keys:['banco ciudad','ciudad de buenos aires'], saldoIni:['saldo anterior','saldo inicial']},
+  provincia:  {name:'Banco Provincia',  keys:['banco provincia','banco de la provincia de buenos aires','bapro'], saldoIni:['saldo anterior','saldo inicial']},
+  nacion:     {name:'Banco Nación',     keys:['banco de la nacion','banco de la nación','banco nacion','banco nación','bna'], saldoIni:['saldo anterior','saldo inicial']},
+  icbc:       {name:'ICBC',             keys:['icbc','industrial and commercial bank'], saldoIni:['saldo anterior','saldo inicial','saldo ultimo extracto','saldo último extracto']}
+};
+
+/* ---------- clasificación (imputacion) ---------- */
+const CATS = [
+  {cat:'Impuesto al debito',   kw:['imp. deb','imp deb','impuesto ley 25413 deb','imp.s/debitos','impuesto debitos','iva rg','ley 25.413 deb','ley 25413 deb','imp. ley 25.413 s/ deb','impuesto al debito']},
+  {cat:'Impuesto al credito',  kw:['imp. cred','imp cred','impuesto ley 25413 cred','imp.s/creditos','impuesto creditos','ley 25.413 cred','ley 25413 cred','impuesto al credito']},
+  {cat:'Percepcion IIBB',      kw:['sircreb','sircupa','perc. iibb','percepcion iibb','percepción iibb','perc iibb','reg.recaudacion iibb','ing. brutos','ingresos brutos']},
+  {cat:'Percepcion IVA',       kw:['perc. iva','percepcion iva','percepción iva','rg 2408','rg2408','rg 3337']},
+  {cat:'IVA',                  kw:['iva 21','iva 10,5','iva 10.5','iva tasa','iva general','i.v.a.','iva s/comision','iva s/ comision','iva debito fiscal']},
+  {cat:'Comisiones y gastos',  kw:['comision','comisión','mantenimiento','cargo','gasto','servicio de cuenta','uso de canales','paquete','fee']},
+  {cat:'Impuesto de sellos',   kw:['sellos','impuesto de sellos','imp. sellos']},
+  {cat:'Intereses pagados',    kw:['interes deudor','intereses deudores','int. deudores','interes por descubierto','intereses saldo deudor','punitorios']},
+  {cat:'Intereses ganados',    kw:['interes acreedor','intereses acreedores','int. acreedores','rendimiento','remuneracion saldo']},
+  {cat:'Cuota de prestamo',    kw:['cuota prestamo','cuota préstamo','pago prestamo','debito prestamo','amortizacion prestamo']},
+  {cat:'Extraccion de efectivo',kw:['extraccion','extracción','retiro atm','retiro cajero','extracash']},
+  {cat:'Deposito de efectivo', kw:['deposito efectivo','depósito efectivo','deposito en efectivo','dep.efectivo']},
+  {cat:'Sueldos',              kw:['haberes','sueldo','acreditamiento de haberes','pago de haberes']},
+  {cat:'Cargas sociales',      kw:['afip','arca','931','seguridad social','suss','vep']},
+  {cat:'Tarjetas',             kw:['visa','mastercard','amex','tarjeta','first data','prisma','payway','posnet']},
+  {cat:'Cheques',              kw:['cheque','echeq','ch. ','valores al cobro','clearing']},
+  {cat:'Deudores por ventas',  kw:['transferencia recibida','transf recibida','transf. recibida','credito por transferencia','acreditacion transferencia','transferencia de terceros','credito inmediato','debin']},
+  {cat:'Proveedores',          kw:['transferencia realizada','transf realizada','transf. realizada','debito por transferencia','pago a proveedores','transferencia a terceros','pago de servicios','pagomiscuentas']},
+];
+function classify(desc, importe){
+  const d = desc.toLowerCase();
+  for(const c of CATS){
+    if(c.kw.some(k => d.includes(k))) return c.cat;
+  }
+  if(d.includes('transferencia') || d.includes('transf')){
+    return importe >= 0 ? 'Deudores por ventas' : 'Proveedores';
+  }
+  return 'Otros';
+}
+
+/* ---------- extracción de líneas con pdf.js ---------- */
+async function pdfToLines(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  const lines = [];
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    // agrupar items por coordenada Y (tolerancia 2.5)
+    const rows = {};
+    for(const it of tc.items){
+      if(!it.str.trim()) continue;
+      const y = Math.round(it.transform[5] / 2.5) * 2.5;
+      (rows[y] = rows[y] || []).push({x: it.transform[4], s: it.str});
+    }
+    const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
+    for(const y of ys){
+      const parts = rows[y].sort((a,b)=>a.x-b.x);
+      const text = parts.map(p=>p.s).join(' ').replace(/\s+/g,' ').trim();
+      if(text) lines.push({text, parts});
+    }
+  }
+  return lines;
+}
+
+/* ---------- detección de banco ---------- */
+function detectBank(lines, filename){
+  const all = (lines.slice(0,80).map(l=>l.text).join(' ') + ' ' + filename).toLowerCase();
+  for(const [id,cfg] of Object.entries(BANKS)){
+    if(cfg.keys.some(k => all.includes(k))) return id;
+  }
+  return null;
+}
+
+/* ---------- detección de cuenta ---------- */
+function detectAccount(lines){
+  const pats = [
+    /(?:cuenta|cta\.?|nro\.? de cuenta|cbu)[:\s Nº°]*([\d\-\/\.]{6,26})/i,
+    /(?:CC \$|CA \$|CC|CA)[\s:]*([\d\-\/\.]{6,22})/
+  ];
+  for(const l of lines.slice(0,60)){
+    for(const p of pats){
+      const m = l.text.match(p);
+      if(m) return m[1].trim();
+    }
+  }
+  return '';
+}
+
+/* ---------- parseo principal (motor por saldo corrido) ---------- */
+function parseMovements(lines, bankId){
+  const cfg = BANKS[bankId];
+  const movs = [];
+  let saldoInicial = null;
+  let saldoPrev = null;
+
+  // buscar saldo inicial declarado
+  for(const l of lines){
+    const low = l.text.toLowerCase();
+    if(cfg.saldoIni.some(k => low.includes(k))){
+      const nums = l.text.match(NUM_RE);
+      if(nums && nums.length){
+        const v = parseAR(nums[nums.length-1]);
+        if(v !== null){ saldoInicial = v; saldoPrev = v; break; }
+      }
+    }
+  }
+
+  let current = null;
+  const SKIP = ['saldo anterior','saldo inicial','saldo final','saldo al ','total ','transporte','subtotal','hoja ','pagina','página','fecha descripcion','fecha concepto','detalle de movimientos','movimientos de la cuenta','resumen de cuenta','usted puede','ente regulador','banco central'];
+
+  for(const l of lines){
+    const t = l.text;
+    const low = t.toLowerCase();
+    const m = t.match(DATE_RE);
+
+    if(m){
+      if(SKIP.some(k=>low.includes(k))) { continue; }
+      // línea nueva de movimiento
+      if(current) movs.push(current);
+      let [_, dd, mm, yy] = m;
+      if(yy.length === 4) yy = yy.slice(2);
+      const fecha = `${dd.padStart(2,'0')}/${mm.padStart(2,'0')}/${yy}`;
+      const rest = t.replace(DATE_RE,'').trim();
+      const nums = rest.match(NUM_RE) || [];
+      const desc = rest.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
+      current = {fecha, desc, detalle:'', nums: nums.map(parseAR).filter(v=>v!==null), raw:[t]};
+    } else if(current){
+      // continuación (detalle) o corte
+      if(SKIP.some(k=>low.includes(k))){ movs.push(current); current = null; continue; }
+      const nums = t.match(NUM_RE) || [];
+      const extra = t.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
+      if(nums.length && current.nums.length === 0){
+        current.nums = nums.map(parseAR).filter(v=>v!==null);
+      }
+      if(extra && current.detalle.length < 120){
+        current.detalle = (current.detalle + ' ' + extra).trim();
+      }
+      current.raw.push(t);
+    }
+  }
+  if(current) movs.push(current);
+
+  // resolver importe/saldo con saldo corrido
+  const out = [];
+  let warns = 0;
+  for(const mv of movs){
+    if(!mv.nums.length) { warns++; continue; }
+    let importe = null, saldo = null;
+    if(mv.nums.length >= 2){
+      saldo = mv.nums[mv.nums.length-1];
+      const amt = Math.abs(mv.nums[mv.nums.length-2]);
+      if(saldoPrev !== null){
+        const delta = saldo - saldoPrev;
+        // usar el delta del saldo para determinar el signo
+        if(Math.abs(Math.abs(delta) - amt) < 0.011){
+          importe = delta;
+        } else {
+          importe = mv.nums[mv.nums.length-2];
+          warns++;
+        }
+      } else {
+        importe = mv.nums[mv.nums.length-2];
+      }
+      saldoPrev = saldo;
+    } else {
+      // una sola cifra: es el importe, sin saldo en línea (ej. Brubank)
+      importe = mv.nums[0];
+      if(saldoPrev !== null){ saldoPrev = saldoPrev + importe; saldo = saldoPrev; }
+    }
+    out.push({
+      fecha: mv.fecha,
+      descripcion: mv.desc || '(sin descripción)',
+      detalle: mv.detalle,
+      importe: Math.round(importe*100)/100,
+      saldo: saldo !== null ? Math.round(saldo*100)/100 : '',
+    });
+  }
+  return {movs: out, saldoInicial, warns};
+}
+
+/* ---------- flujo principal ---------- */
+let RESULT = null;
+const $ = id => document.getElementById(id);
+const drop = $('drop'), fileInput = $('file');
+
+drop.addEventListener('click', ()=>fileInput.click());
+drop.addEventListener('dragover', e=>{e.preventDefault();drop.classList.add('over');});
+drop.addEventListener('dragleave', ()=>drop.classList.remove('over'));
+drop.addEventListener('drop', e=>{e.preventDefault();drop.classList.remove('over');handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change', ()=>handleFiles(fileInput.files));
+
+async function handleFiles(files){
+  if(!files.length) return;
+  $('status').textContent = 'Leyendo PDF…';
+  $('warnbox').style.display='none';
+  const allRows = [];
+  let tapeData = null;
+  let warnMsgs = [];
+
+  try{
+    for(const file of files){
+      const lines = await pdfToLines(file);
+      if(!lines.length){
+        warnMsgs.push(`«${file.name}»: no se pudo extraer texto. Si es un escaneo o foto, este conversor no lo puede procesar.`);
+        continue;
+      }
+      let bankId = $('bank').value;
+      if(bankId === 'auto'){
+        bankId = detectBank(lines, file.name);
+        if(!bankId){
+          warnMsgs.push(`«${file.name}»: no pude identificar el banco automáticamente. Elegilo del selector y volvé a subirlo.`);
+          continue;
+        }
+      }
+      const bankName = BANKS[bankId].name;
+      const cuenta = detectAccount(lines);
+      const {movs, saldoInicial, warns} = parseMovements(lines, bankId);
+
+      if(!movs.length){
+        warnMsgs.push(`«${file.name}» (${bankName}): no encontré movimientos con el patrón esperado. Puede que este diseño de resumen necesite calibración — ver nota al pie.`);
+        continue;
+      }
+      if(warns > 0){
+        warnMsgs.push(`«${file.name}»: ${warns} línea(s) con números que no cerraron contra el saldo corrido. Revisá esas filas contra el PDF.`);
+      }
+
+      // fila saldo inicial
+      if(saldoInicial !== null){
+        allRows.push({cuenta, fecha: movs[0].fecha, descripcion:'Saldo Inicial', detalle:'', importe:'', saldo: saldoInicial, tipo_movimiento:'Saldo Inicial', fuente: file.name, imputacion:''});
+      }
+      let totC=0, totD=0;
+      for(const m of movs){
+        const tipo = m.importe >= 0 ? 'Credito' : 'Debito';
+        if(m.importe>=0) totC+=m.importe; else totD+=m.importe;
+        allRows.push({cuenta, fecha:m.fecha, descripcion:m.descripcion, detalle:m.detalle, importe:m.importe, saldo:m.saldo, tipo_movimiento:tipo, fuente:file.name, imputacion:classify(m.descripcion+' '+m.detalle, m.importe)});
+      }
+      const lastSaldo = movs[movs.length-1].saldo;
+      tapeData = {
+        ini: saldoInicial, cred: totC, deb: totD,
+        calc: saldoInicial !== null ? saldoInicial + totC + totD : null,
+        pdf: lastSaldo === '' ? null : lastSaldo
+      };
+    }
+  }catch(err){
+    $('status').textContent = 'Error al procesar: ' + err.message;
+    return;
+  }
+
+  if(!allRows.length){
+    $('status').textContent = 'No se generaron filas.';
+    if(warnMsgs.length){ $('warnbox').style.display='block'; $('warnbox').innerHTML = warnMsgs.join('<br>'); }
+    return;
+  }
+
+  RESULT = allRows;
+  renderTable(allRows);
+  renderTape(tapeData);
+  if(warnMsgs.length){ $('warnbox').style.display='block'; $('warnbox').innerHTML = warnMsgs.join('<br>'); }
+  $('status').textContent = 'Listo. ' + allRows.length + ' filas generadas.';
+  $('resultpanel').style.display='block';
+  $('tblwrap').style.display='block';
+}
+
+function renderTape(t){
+  if(!t){ $('tape').style.display='none'; return; }
+  $('tape').style.display='block';
+  $('t-ini').textContent  = t.ini  !== null ? fmtAR(t.ini)  : 'no detectado';
+  $('t-cred').textContent = fmtAR(t.cred);
+  $('t-deb').textContent  = fmtAR(t.deb);
+  $('t-calc').textContent = t.calc !== null ? fmtAR(t.calc) : '—';
+  $('t-pdf').textContent  = t.pdf  !== null ? fmtAR(t.pdf)  : '—';
+  const ok = $('t-ok');
+  if(t.calc !== null && t.pdf !== null){
+    const cuadra = Math.abs(t.calc - t.pdf) < 0.011;
+    ok.textContent = cuadra ? '✓ CUADRA' : '✗ DIFERENCIA ' + fmtAR(t.calc - t.pdf);
+    ok.className = 'val ' + (cuadra ? 'ok' : 'bad');
+  } else {
+    ok.textContent = 'sin control (falta saldo inicial o final)';
+    ok.className = 'val';
+  }
+}
+
+function renderTable(rows){
+  const tb = $('tbody');
+  tb.innerHTML = '';
+  const show = rows.slice(0, 300);
+  for(const r of show){
+    const tr = document.createElement('tr');
+    const impCls = r.importe === '' ? 'num' : (r.importe < 0 ? 'num debit' : 'num credit');
+    tr.innerHTML =
+      `<td>${esc(r.cuenta)}</td><td class="num">${r.fecha}</td><td>${esc(r.descripcion)}</td><td>${esc(r.detalle)}</td>`+
+      `<td class="${impCls}">${r.importe===''?'':fmtAR(r.importe)}</td>`+
+      `<td class="num">${r.saldo===''?'':fmtAR(r.saldo)}</td>`+
+      `<td>${r.tipo_movimiento}</td><td>${esc(r.fuente)}</td><td>${esc(r.imputacion)}</td>`;
+    tb.appendChild(tr);
+  }
+  $('count').textContent = rows.length > 300 ? `Mostrando 300 de ${rows.length} filas (el Excel incluye todas).` : `${rows.length} filas.`;
+}
+function esc(s){ return String(s??'').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+
+$('dl').addEventListener('click', ()=>{
+  if(!RESULT) return;
+  const data = RESULT.map(r=>({
+    cuenta:r.cuenta, fecha:r.fecha, descripcion:r.descripcion, detalle:r.detalle,
+    importe:r.importe, saldo:r.saldo, tipo_movimiento:r.tipo_movimiento, fuente:r.fuente, imputacion:r.imputacion
+  }));
+  const ws = XLSX.utils.json_to_sheet(data, {header:['cuenta','fecha','descripcion','detalle','importe','saldo','tipo_movimiento','fuente','imputacion']});
+  ws['!cols'] = [{wch:16},{wch:9},{wch:38},{wch:30},{wch:13},{wch:13},{wch:14},{wch:24},{wch:22}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Movimientos');
+  XLSX.writeFile(wb, 'extracto_convertido.xlsx');
+});
+
+$('clear').addEventListener('click', ()=>{
+  RESULT=null; fileInput.value='';
+  $('resultpanel').style.display='none';
+  $('tape').style.display='none';
+  $('warnbox').style.display='none';
+  $('status').textContent='';
+});
+</script>
+</body>
+</html>
