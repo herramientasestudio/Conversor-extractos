@@ -69,6 +69,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
 <body>
 <div class="wrap">
 <header>
+  <div class="eyebrow">Herramienta pública · Estudio Kern</div>
   <h1>Extracto bancario PDF <em>→</em> Excel</h1>
   <p class="sub">Convertí resúmenes bancarios digitales al formato de trabajo (cuenta, fecha, descripción, importe, saldo, imputación). Sin inteligencia artificial: el análisis se hace por reglas, con verificación de saldos.</p>
   <span class="privacy">⛨ El PDF nunca sale de tu navegador — nada se sube a ningún servidor</span>
@@ -147,7 +148,7 @@ function fmtAR(v){
   return v.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 const NUM_RE = /-?\(?\$?\s?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})\)?-?/g;
-const DATE_RE = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/;
+const DATE_RE = /^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?(?=\s)/;
 
 /* ---------- configuración por banco ---------- */
 const BANKS = {
@@ -246,41 +247,74 @@ function detectAccount(lines){
 /* ---------- parseo principal (motor por saldo corrido) ---------- */
 function parseMovements(lines, bankId){
   const cfg = BANKS[bankId];
+
+  // inferir el año del documento (para bancos con fechas DD/MM sin año, ej. BBVA)
+  const yearCounts = {};
+  for(const l of lines){
+    const full = l.text.match(/\d{1,2}\/\d{1,2}\/(20\d{2}|\d{2})\b/g);
+    if(full) for(const f of full){
+      let y = f.split('/')[2];
+      if(y.length === 2) y = '20' + y;
+      yearCounts[y] = (yearCounts[y]||0) + 1;
+    }
+    const loose = l.text.match(/\b(20\d{2})\b/g);
+    if(loose) for(const y of loose) yearCounts[y] = (yearCounts[y]||0) + 0.2;
+  }
+  let docYear = null, best = 0;
+  for(const [y,c] of Object.entries(yearCounts)){ if(c > best){ best = c; docYear = y; } }
+  const yy2 = docYear ? docYear.slice(2) : String(new Date().getFullYear()).slice(2);
+
+  // zonas: si el resumen declara "SALDO ANTERIOR", solo se leen movimientos entre ese
+  // marcador y "TOTAL MOVIMIENTOS"/"SALDO AL ..." (evita secciones como Transferencias,
+  // Débitos automáticos o Inversiones que también tienen líneas con fecha)
+  const hasZones = lines.some(l => cfg.saldoIni.some(k => l.text.toLowerCase().includes(k)));
+
   const movs = [];
   let saldoInicial = null;
   let saldoPrev = null;
-
-  // buscar saldo inicial declarado
-  for(const l of lines){
-    const low = l.text.toLowerCase();
-    if(cfg.saldoIni.some(k => low.includes(k))){
-      const nums = l.text.match(NUM_RE);
-      if(nums && nums.length){
-        const v = parseAR(nums[nums.length-1]);
-        if(v !== null){ saldoInicial = v; saldoPrev = v; break; }
-      }
-    }
-  }
-
+  let capturing = !hasZones;
   let current = null;
-  const SKIP = ['saldo anterior','saldo inicial','saldo final','saldo al ','total ','transporte','subtotal','hoja ','pagina','página','fecha descripcion','fecha concepto','detalle de movimientos','movimientos de la cuenta','resumen de cuenta','usted puede','ente regulador','banco central'];
+  let cuentaActual = '';
+  const acctPat = /(?:cc\s*\$|ca\s*\$|cuenta|cta\.?|cbu)[\sNº°:.\-]*([\d][\d\-\/\.]{5,24})/i;
+  const ZONE_END = ['total movimientos','saldo al ','saldo final'];
+  const SKIP = ['saldo anterior','saldo inicial','saldo final','saldo al ','total ','transporte','subtotal','sin movimientos','hoja ','pagina','página','fecha descripcion','fecha concepto','detalle de movimientos','movimientos de la cuenta','resumen de cuenta','usted puede','ente regulador','banco central'];
 
   for(const l of lines){
     const t = l.text;
     const low = t.toLowerCase();
-    const m = t.match(DATE_RE);
 
+    const am = t.match(acctPat);
+    if(am && !t.match(DATE_RE)) cuentaActual = am[1].trim();
+
+    if(cfg.saldoIni.some(k => low.includes(k))){
+      const nums = t.match(NUM_RE);
+      if(nums && nums.length){
+        const v = parseAR(nums[nums.length-1]);
+        if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; }
+      }
+      if(current){ movs.push(current); current = null; }
+      capturing = true;
+      continue;
+    }
+    if(hasZones && capturing && ZONE_END.some(k => low.includes(k))){
+      if(current){ movs.push(current); current = null; }
+      capturing = false;
+      continue;
+    }
+    if(!capturing) continue;
+
+    const m = t.match(DATE_RE);
     if(m){
       if(SKIP.some(k=>low.includes(k))) { continue; }
       // línea nueva de movimiento
       if(current) movs.push(current);
       let [_, dd, mm, yy] = m;
-      if(yy.length === 4) yy = yy.slice(2);
+      yy = yy ? (yy.length === 4 ? yy.slice(2) : yy) : yy2;
       const fecha = `${dd.padStart(2,'0')}/${mm.padStart(2,'0')}/${yy}`;
       const rest = t.replace(DATE_RE,'').trim();
       const nums = rest.match(NUM_RE) || [];
       const desc = rest.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
-      current = {fecha, desc, detalle:'', nums: nums.map(parseAR).filter(v=>v!==null), raw:[t]};
+      current = {fecha, desc, detalle:'', nums: nums.map(parseAR).filter(v=>v!==null), cuenta: cuentaActual, raw:[t]};
     } else if(current){
       // continuación (detalle) o corte
       if(SKIP.some(k=>low.includes(k))){ movs.push(current); current = null; continue; }
@@ -325,6 +359,7 @@ function parseMovements(lines, bankId){
       if(saldoPrev !== null){ saldoPrev = saldoPrev + importe; saldo = saldoPrev; }
     }
     out.push({
+      cuenta: mv.cuenta || '',
       fecha: mv.fecha,
       descripcion: mv.desc || '(sin descripción)',
       detalle: mv.detalle,
@@ -383,13 +418,13 @@ async function handleFiles(files){
 
       // fila saldo inicial
       if(saldoInicial !== null){
-        allRows.push({cuenta, fecha: movs[0].fecha, descripcion:'Saldo Inicial', detalle:'', importe:'', saldo: saldoInicial, tipo_movimiento:'Saldo Inicial', fuente: file.name, imputacion:''});
+        allRows.push({cuenta: movs[0].cuenta || cuenta, fecha: movs[0].fecha, descripcion:'Saldo Inicial', detalle:'', importe:'', saldo: saldoInicial, tipo_movimiento:'Saldo Inicial', fuente: file.name, imputacion:''});
       }
       let totC=0, totD=0;
       for(const m of movs){
         const tipo = m.importe >= 0 ? 'Credito' : 'Debito';
         if(m.importe>=0) totC+=m.importe; else totD+=m.importe;
-        allRows.push({cuenta, fecha:m.fecha, descripcion:m.descripcion, detalle:m.detalle, importe:m.importe, saldo:m.saldo, tipo_movimiento:tipo, fuente:file.name, imputacion:classify(m.descripcion+' '+m.detalle, m.importe)});
+        allRows.push({cuenta: m.cuenta || cuenta, fecha:m.fecha, descripcion:m.descripcion, detalle:m.detalle, importe:m.importe, saldo:m.saldo, tipo_movimiento:tipo, fuente:file.name, imputacion:classify(m.descripcion+' '+m.detalle, m.importe)});
       }
       const lastSaldo = movs[movs.length-1].saldo;
       tapeData = {
