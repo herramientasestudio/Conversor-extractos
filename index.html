@@ -69,6 +69,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
 <body>
 <div class="wrap">
 <header>
+  <div class="eyebrow">Herramienta pública · Estudio Kern</div>
   <h1>Extracto bancario PDF <em>→</em> Excel</h1>
   <p class="sub">Convertí resúmenes bancarios digitales al formato de trabajo (cuenta, fecha, descripción, importe, saldo, imputación). Sin inteligencia artificial: el análisis se hace por reglas, con verificación de saldos.</p>
   <span class="privacy">⛨ El PDF nunca sale de tu navegador — nada se sube a ningún servidor</span>
@@ -87,6 +88,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
     <option value="ciudad">Banco Ciudad</option>
     <option value="provincia">Banco Provincia</option>
     <option value="nacion">Banco Nación</option>
+    <option value="patagonia">Banco Patagonia</option>
     <option value="icbc">ICBC</option>
   </select>
   <div class="drop" id="drop">
@@ -124,7 +126,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
   <div class="count" id="count"></div>
 </div>
 
-<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste.</footer>
+<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v4</span></footer>
 </div>
 
 <script>
@@ -159,6 +161,7 @@ const BANKS = {
   ciudad:     {name:'Banco Ciudad',     keys:['banco ciudad','ciudad de buenos aires'], saldoIni:['saldo anterior','saldo inicial']},
   provincia:  {name:'Banco Provincia',  keys:['banco provincia','banco de la provincia de buenos aires','bapro'], saldoIni:['saldo anterior','saldo inicial']},
   nacion:     {name:'Banco Nación',     keys:['banco de la nacion','banco de la nación','banco nacion','banco nación','bna'], saldoIni:['saldo anterior','saldo inicial']},
+  patagonia:  {name:'Banco Patagonia',  keys:['bancopatagonia','banco patagonia','patagonia'], saldoIni:['saldo anterior','saldo inicial']},
   icbc:       {name:'ICBC',             keys:['icbc','industrial and commercial bank'], saldoIni:['saldo anterior','saldo inicial','saldo ultimo extracto','saldo último extracto']}
 };
 
@@ -207,7 +210,7 @@ async function pdfToLines(file){
     for(const it of tc.items){
       if(!it.str.trim()) continue;
       const y = Math.round(it.transform[5] / 2.5) * 2.5;
-      (rows[y] = rows[y] || []).push({x: it.transform[4], s: it.str});
+      (rows[y] = rows[y] || []).push({x: it.transform[4], w: it.width || 0, s: it.str});
     }
     const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
     for(const y of ys){
@@ -274,8 +277,10 @@ function parseMovements(lines, bankId){
   let capturing = !hasZones;
   let current = null;
   let cuentaActual = '';
+  let pendingNums = null; // importes que pdf.js separa en una línea propia
   const acctPat = /(?:cc\s*\$|ca\s*\$|cuenta|cta\.?|cbu)[\sNº°:.\-]*([\d][\d\-\/\.]{5,24})/i;
-  const ZONE_END = ['total movimientos','saldo al ','saldo final'];
+  const ZONE_END = ['total movimientos','saldo al ','saldo final','saldo actual'];
+  let colDeb = null, colCred = null, colSaldo = null; // bordes derechos de columnas (bancos tipo Patagonia)
   const SKIP = ['saldo anterior','saldo inicial','saldo final','saldo al ','total ','transporte','subtotal','sin movimientos','hoja ','pagina','página','fecha descripcion','fecha concepto','detalle de movimientos','movimientos de la cuenta','resumen de cuenta','usted puede','ente regulador','banco central'];
 
   for(const l of lines){
@@ -285,6 +290,16 @@ function parseMovements(lines, bankId){
     const am = t.match(acctPat);
     if(am && !t.match(DATE_RE)) cuentaActual = am[1].trim();
 
+    // registrar bordes de columnas del encabezado (para bancos que separan DEBITOS / CREDITOS)
+    if(l.parts && /d[eé]bitos?/i.test(low) && /cr[eé]ditos?/i.test(low)){
+      for(const p of l.parts){
+        const ps = p.s.trim().toLowerCase();
+        if(/^d[eé]bitos?$/.test(ps)) colDeb = p.x + p.w;
+        else if(/^cr[eé]ditos?$/.test(ps)) colCred = p.x + p.w;
+        else if(/^saldo$/.test(ps)) colSaldo = p.x + p.w;
+      }
+    }
+
     if(cfg.saldoIni.some(k => low.includes(k))){
       const nums = t.match(NUM_RE);
       if(nums && nums.length){
@@ -292,11 +307,13 @@ function parseMovements(lines, bankId){
         if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; }
       }
       if(current){ movs.push(current); current = null; }
+      pendingNums = null;
       capturing = true;
       continue;
     }
     if(hasZones && capturing && ZONE_END.some(k => low.includes(k))){
       if(current){ movs.push(current); current = null; }
+      pendingNums = null;
       capturing = false;
       continue;
     }
@@ -311,10 +328,37 @@ function parseMovements(lines, bankId){
       yy = yy ? (yy.length === 4 ? yy.slice(2) : yy) : yy2;
       const fecha = `${dd.padStart(2,'0')}/${mm.padStart(2,'0')}/${yy}`;
       const rest = t.replace(DATE_RE,'').trim();
-      const nums = rest.match(NUM_RE) || [];
+      let nums = (rest.match(NUM_RE) || []).map(parseAR).filter(v=>v!==null);
+      if(!nums.length && pendingNums){ nums = pendingNums; }
+      pendingNums = null;
       const desc = rest.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
-      current = {fecha, desc, detalle:'', nums: nums.map(parseAR).filter(v=>v!==null), cuenta: cuentaActual, raw:[t]};
-    } else if(current){
+      // asignación por columna (débito/crédito/saldo según posición X)
+      let importeCol = null, saldoCol = null;
+      if(colDeb !== null && colCred !== null && l.parts){
+        for(const p of l.parts){
+          const v = parseAR(p.s.trim());
+          if(v === null) continue;
+          const end = p.x + p.w;
+          const dDeb = Math.abs(end - colDeb), dCred = Math.abs(end - colCred);
+          const dSal = colSaldo !== null ? Math.abs(end - colSaldo) : Infinity;
+          if(dSal <= dDeb && dSal <= dCred) saldoCol = v;
+          else if(dDeb <= dCred) importeCol = -Math.abs(v);
+          else importeCol = Math.abs(v);
+        }
+      }
+      current = {fecha, desc, detalle:'', nums, cuenta: cuentaActual, importeCol, saldoCol, raw:[t]};
+    } else if(capturing){
+      // ¿línea de solo números? (pdf.js a veces separa los importes del concepto)
+      const soloNums = t.replace(NUM_RE,'').replace(/[\s\-\.]/g,'') === '';
+      if(soloNums){
+        const nums = (t.match(NUM_RE) || []).map(parseAR).filter(v=>v!==null);
+        if(nums.length){
+          if(current && current.nums.length === 0){ current.nums = nums; }
+          else { pendingNums = nums; }
+        }
+        continue;
+      }
+      if(!current) continue;
       // continuación (detalle) o corte
       if(SKIP.some(k=>low.includes(k))){ movs.push(current); current = null; continue; }
       const nums = t.match(NUM_RE) || [];
@@ -334,9 +378,21 @@ function parseMovements(lines, bankId){
   const out = [];
   let warns = 0;
   for(const mv of movs){
-    if(!mv.nums.length) { warns++; continue; }
     let importe = null, saldo = null;
-    if(mv.nums.length >= 2){
+    if(mv.nums.length < 2 && mv.importeCol != null){
+      // el banco separa débitos y créditos en columnas: el signo viene de la posición
+      importe = mv.importeCol;
+      if(mv.saldoCol != null){
+        saldo = mv.saldoCol;
+        if(saldoPrev !== null && Math.abs((saldoPrev + importe) - saldo) > 0.011) warns++;
+        saldoPrev = saldo;
+      } else if(saldoPrev !== null){
+        saldoPrev = Math.round((saldoPrev + importe)*100)/100;
+        saldo = saldoPrev;
+      }
+    }
+    else if(!mv.nums.length) { warns++; continue; }
+    else if(mv.nums.length >= 2){
       saldo = mv.nums[mv.nums.length-1];
       const amt = Math.abs(mv.nums[mv.nums.length-2]);
       if(saldoPrev !== null){
