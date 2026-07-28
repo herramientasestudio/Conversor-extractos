@@ -69,7 +69,6 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
 <body>
 <div class="wrap">
 <header>
-  <div class="eyebrow">Herramienta pública · Estudio Kern</div>
   <h1>Extracto bancario PDF <em>→</em> Excel</h1>
   <p class="sub">Convertí resúmenes bancarios digitales al formato de trabajo (cuenta, fecha, descripción, importe, saldo, imputación). Sin inteligencia artificial: el análisis se hace por reglas, con verificación de saldos.</p>
   <span class="privacy">⛨ El PDF nunca sale de tu navegador — nada se sube a ningún servidor</span>
@@ -90,6 +89,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
     <option value="nacion">Banco Nación</option>
     <option value="patagonia">Banco Patagonia</option>
     <option value="icbc">ICBC</option>
+    <option value="mercadopago">Mercado Pago</option>
   </select>
   <div class="drop" id="drop">
     <input type="file" id="file" accept="application/pdf" multiple>
@@ -126,7 +126,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
   <div class="count" id="count"></div>
 </div>
 
-<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v4</span></footer>
+<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v5</span></footer>
 </div>
 
 <script>
@@ -162,7 +162,8 @@ const BANKS = {
   provincia:  {name:'Banco Provincia',  keys:['banco provincia','banco de la provincia de buenos aires','bapro'], saldoIni:['saldo anterior','saldo inicial']},
   nacion:     {name:'Banco Nación',     keys:['banco de la nacion','banco de la nación','banco nacion','banco nación','bna'], saldoIni:['saldo anterior','saldo inicial']},
   patagonia:  {name:'Banco Patagonia',  keys:['bancopatagonia','banco patagonia','patagonia'], saldoIni:['saldo anterior','saldo inicial']},
-  icbc:       {name:'ICBC',             keys:['icbc','industrial and commercial bank'], saldoIni:['saldo anterior','saldo inicial','saldo ultimo extracto','saldo último extracto']}
+  icbc:       {name:'ICBC',             keys:['icbc','industrial and commercial bank'], saldoIni:['saldo anterior','saldo inicial','saldo ultimo extracto','saldo último extracto']},
+  mercadopago:{name:'Mercado Pago',     keys:['mercado pago','mercadopago'], saldoIni:['saldo inicial','saldo anterior']}
 };
 
 /* ---------- clasificación (imputacion) ---------- */
@@ -234,7 +235,7 @@ function detectBank(lines, filename){
 /* ---------- detección de cuenta ---------- */
 function detectAccount(lines){
   const pats = [
-    /(?:cuenta|cta\.?|nro\.? de cuenta|cbu)[:\s Nº°]*([\d\-\/\.]{6,26})/i,
+    /(?:cuenta|cta\.?|nro\.? de cuenta|cbu|cvu)[:\s Nº°]*([\d\-\/\.]{6,26})/i,
     /(?:CC \$|CA \$|CC|CA)[\s:]*([\d\-\/\.]{6,22})/
   ];
   for(const l of lines.slice(0,60)){
@@ -278,10 +279,16 @@ function parseMovements(lines, bankId){
   let current = null;
   let cuentaActual = '';
   let pendingNums = null; // importes que pdf.js separa en una línea propia
-  const acctPat = /(?:cc\s*\$|ca\s*\$|cuenta|cta\.?|cbu)[\sNº°:.\-]*([\d][\d\-\/\.]{5,24})/i;
+  let pendingDesc = null; // primera mitad de una descripción que pdf.js ubica antes de la fecha
+  const acctPat = /(?:cc\s*\$|ca\s*\$|cuenta|cta\.?|cbu|cvu)[\sNº°:.\-]*([\d][\d\-\/\.]{5,24})/i;
   const ZONE_END = ['total movimientos','saldo al ','saldo final','saldo actual'];
+  const PAGE_FOOTER = /^\d{1,3}\s*\/\s*\d{1,3}$/; // pie de página tipo "3/8"
   let colDeb = null, colCred = null, colSaldo = null; // bordes derechos de columnas (bancos tipo Patagonia)
-  const SKIP = ['saldo anterior','saldo inicial','saldo final','saldo al ','total ','transporte','subtotal','sin movimientos','hoja ','pagina','página','fecha descripcion','fecha concepto','detalle de movimientos','movimientos de la cuenta','resumen de cuenta','usted puede','ente regulador','banco central'];
+  const SKIP = ['saldo anterior','saldo inicial','saldo final','saldo al ','total ','transporte','subtotal','sin movimientos','fecha descripcion','fecha descripción','fecha concepto','detalle de movimientos','movimientos de la cuenta','resumen de cuenta','usted puede','ente regulador','banco central','entradas:','salidas:','id de la','operación','operacion','periodo:','período:','cvu:','cuit/','cuil:'];
+  // términos que solo indican encabezado/pie si la línea NO tiene importes (evita descartar "200 Paginas" en una descripción)
+  const SKIP_IF_NO_AMOUNT = ['hoja ','pagina','página'];
+  const skipLine = (txt, lowTxt) => SKIP.some(k=>lowTxt.includes(k)) ||
+    (SKIP_IF_NO_AMOUNT.some(k=>lowTxt.includes(k)) && !(txt.match(NUM_RE)||[]).some(n=>/,\d{2}/.test(n)));
 
   for(const l of lines){
     const t = l.text;
@@ -301,19 +308,26 @@ function parseMovements(lines, bankId){
     }
 
     if(cfg.saldoIni.some(k => low.includes(k))){
-      const nums = t.match(NUM_RE);
-      if(nums && nums.length){
-        const v = parseAR(nums[nums.length-1]);
-        if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; }
+      // si la línea tiene más de una etiqueta de saldo (ej. "Saldo inicial: X Saldo final: Y"),
+      // usar el número que sigue inmediatamente a la etiqueta de saldo inicial, no el último de la línea
+      let v = null;
+      const afterLabel = t.match(/saldo\s+(?:inicial|anterior)[^0-9\-]*(-?\(?\$?\s?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})\)?-?)/i);
+      if(afterLabel){ v = parseAR(afterLabel[1]); }
+      else {
+        const nums = t.match(NUM_RE);
+        if(nums && nums.length) v = parseAR(nums[nums.length-1]);
       }
+      if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; }
       if(current){ movs.push(current); current = null; }
       pendingNums = null;
+      pendingDesc = null;
       capturing = true;
       continue;
     }
     if(hasZones && capturing && ZONE_END.some(k => low.includes(k))){
       if(current){ movs.push(current); current = null; }
       pendingNums = null;
+      pendingDesc = null;
       capturing = false;
       continue;
     }
@@ -321,7 +335,7 @@ function parseMovements(lines, bankId){
 
     const m = t.match(DATE_RE);
     if(m){
-      if(SKIP.some(k=>low.includes(k))) { continue; }
+      if(skipLine(t, low)) { continue; }
       // línea nueva de movimiento
       if(current) movs.push(current);
       let [_, dd, mm, yy] = m;
@@ -331,7 +345,9 @@ function parseMovements(lines, bankId){
       let nums = (rest.match(NUM_RE) || []).map(parseAR).filter(v=>v!==null);
       if(!nums.length && pendingNums){ nums = pendingNums; }
       pendingNums = null;
-      const desc = rest.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
+      let desc = rest.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
+      let wrapCandidate = /^[\d\s.,\-\$]*$/.test(desc); // desc vacía o solo ID: probablemente el nombre viene en líneas vecinas
+      if(pendingDesc){ desc = (pendingDesc + ' ' + desc).trim(); pendingDesc = null; wrapCandidate = true; }
       // asignación por columna (débito/crédito/saldo según posición X)
       let importeCol = null, saldoCol = null;
       if(colDeb !== null && colCred !== null && l.parts){
@@ -346,8 +362,9 @@ function parseMovements(lines, bankId){
           else importeCol = Math.abs(v);
         }
       }
-      current = {fecha, desc, detalle:'', nums, cuenta: cuentaActual, importeCol, saldoCol, raw:[t]};
+      current = {fecha, desc, detalle:'', nums, cuenta: cuentaActual, importeCol, saldoCol, wrapCandidate, raw:[t]};
     } else if(capturing){
+      if(PAGE_FOOTER.test(t)) continue; // ruido de paginación ("3/8"): no afecta el estado
       // ¿línea de solo números? (pdf.js a veces separa los importes del concepto)
       const soloNums = t.replace(NUM_RE,'').replace(/[\s\-\.]/g,'') === '';
       if(soloNums){
@@ -358,9 +375,16 @@ function parseMovements(lines, bankId){
         }
         continue;
       }
-      if(!current) continue;
-      // continuación (detalle) o corte
-      if(SKIP.some(k=>low.includes(k))){ movs.push(current); current = null; continue; }
+      if(!current || !current.wrapCandidate){
+        // texto que no continúa al movimiento actual: es la primera parte de la
+        // descripción del PRÓXIMO movimiento (su línea de fecha trae solo el ID/importe)
+        if(!skipLine(t, low) && !PAGE_FOOTER.test(t) && t.length < 80){
+          pendingDesc = pendingDesc ? (pendingDesc + ' ' + t) : t;
+        }
+        continue;
+      }
+      // continuación (sufijo) o corte
+      if(skipLine(t, low)){ movs.push(current); current = null; continue; }
       const nums = t.match(NUM_RE) || [];
       const extra = t.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
       if(nums.length && current.nums.length === 0){
@@ -369,6 +393,7 @@ function parseMovements(lines, bankId){
       if(extra && current.detalle.length < 120){
         current.detalle = (current.detalle + ' ' + extra).trim();
       }
+      current.wrapCandidate = false; // una sola línea de continuación
       current.raw.push(t);
     }
   }
