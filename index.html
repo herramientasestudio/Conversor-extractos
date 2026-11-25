@@ -90,6 +90,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
     <option value="patagonia">Banco Patagonia</option>
     <option value="icbc">ICBC</option>
     <option value="mercadopago">Mercado Pago</option>
+    <option value="credicoop">Banco Credicoop</option>
   </select>
   <div class="drop" id="drop">
     <input type="file" id="file" accept="application/pdf" multiple>
@@ -126,7 +127,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
   <div class="count" id="count"></div>
 </div>
 
-<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v5</span></footer>
+<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v7</span></footer>
 </div>
 
 <script>
@@ -150,6 +151,18 @@ function fmtAR(v){
 }
 const NUM_RE = /-?\(?\$?\s?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})\)?-?/g;
 const DATE_RE = /^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?(?=\s)/;
+// extrae los importes de un texto, descartando los que son porcentajes (seguidos de %, ej. "10,5%")
+function numMatches(text){
+  const out = [];
+  let m;
+  const re = new RegExp(NUM_RE.source, 'g');
+  while((m = re.exec(text)) !== null){
+    const after = text.slice(re.lastIndex, re.lastIndex + 2);
+    if(/^\s*%/.test(after)) continue; // es un porcentaje, no un importe
+    out.push(m[0]);
+  }
+  return out;
+}
 
 /* ---------- configuración por banco ---------- */
 const BANKS = {
@@ -163,7 +176,8 @@ const BANKS = {
   nacion:     {name:'Banco Nación',     keys:['banco de la nacion','banco de la nación','banco nacion','banco nación','bna'], saldoIni:['saldo anterior','saldo inicial']},
   patagonia:  {name:'Banco Patagonia',  keys:['bancopatagonia','banco patagonia','patagonia'], saldoIni:['saldo anterior','saldo inicial']},
   icbc:       {name:'ICBC',             keys:['icbc','industrial and commercial bank'], saldoIni:['saldo anterior','saldo inicial','saldo ultimo extracto','saldo último extracto']},
-  mercadopago:{name:'Mercado Pago',     keys:['mercado pago','mercadopago'], saldoIni:['saldo inicial','saldo anterior']}
+  mercadopago:{name:'Mercado Pago',     keys:['mercado pago','mercadopago'], saldoIni:['saldo inicial','saldo anterior']},
+  credicoop:  {name:'Banco Credicoop',  keys:['credicoop','banco credicoop cooperativo'], saldoIni:['saldo anterior','saldo inicial']}
 };
 
 /* ---------- clasificación (imputacion) ---------- */
@@ -210,8 +224,10 @@ async function pdfToLines(file){
     const rows = {};
     for(const it of tc.items){
       if(!it.str.trim()) continue;
+      // normalizar guiones unicode (− U+2212, – U+2013, — U+2014) a '-' ASCII (ej. Credicoop usa U+2212 para negativos)
+      const s = it.str.replace(/[−–—]/g, '-');
       const y = Math.round(it.transform[5] / 2.5) * 2.5;
-      (rows[y] = rows[y] || []).push({x: it.transform[4], w: it.width || 0, s: it.str});
+      (rows[y] = rows[y] || []).push({x: it.transform[4], w: it.width || 0, s});
     }
     const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
     for(const y of ys){
@@ -305,6 +321,9 @@ function parseMovements(lines, bankId){
         else if(/^cr[eé]ditos?$/.test(ps)) colCred = p.x + p.w;
         else if(/^saldo$/.test(ps)) colSaldo = p.x + p.w;
       }
+      // si es la fila de encabezado de la tabla (Fecha ... Descripción ... Débito ... Crédito ... Saldo),
+      // descartar cualquier texto de cabecera acumulado antes de la tabla
+      if(/fecha/i.test(low) && /(descripci|concepto)/i.test(low)){ pendingDesc = null; continue; }
     }
 
     if(cfg.saldoIni.some(k => low.includes(k))){
@@ -314,7 +333,7 @@ function parseMovements(lines, bankId){
       const afterLabel = t.match(/saldo\s+(?:inicial|anterior)[^0-9\-]*(-?\(?\$?\s?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})\)?-?)/i);
       if(afterLabel){ v = parseAR(afterLabel[1]); }
       else {
-        const nums = t.match(NUM_RE);
+        const nums = numMatches(t);
         if(nums && nums.length) v = parseAR(nums[nums.length-1]);
       }
       if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; }
@@ -324,7 +343,9 @@ function parseMovements(lines, bankId){
       capturing = true;
       continue;
     }
-    if(hasZones && capturing && ZONE_END.some(k => low.includes(k))){
+    // cerrar zona solo si ya capturé algún movimiento (evita cortar cuando el bloque
+    // "Resumen" con Saldo Inicial/Final está ARRIBA de la tabla, como en Brubank)
+    if(hasZones && capturing && movs.length > 0 && ZONE_END.some(k => low.includes(k))){
       if(current){ movs.push(current); current = null; }
       pendingNums = null;
       pendingDesc = null;
@@ -342,7 +363,7 @@ function parseMovements(lines, bankId){
       yy = yy ? (yy.length === 4 ? yy.slice(2) : yy) : yy2;
       const fecha = `${dd.padStart(2,'0')}/${mm.padStart(2,'0')}/${yy}`;
       const rest = t.replace(DATE_RE,'').trim();
-      let nums = (rest.match(NUM_RE) || []).map(parseAR).filter(v=>v!==null);
+      let nums = numMatches(rest).map(parseAR).filter(v=>v!==null);
       if(!nums.length && pendingNums){ nums = pendingNums; }
       pendingNums = null;
       let desc = rest.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
@@ -368,7 +389,7 @@ function parseMovements(lines, bankId){
       // ¿línea de solo números? (pdf.js a veces separa los importes del concepto)
       const soloNums = t.replace(NUM_RE,'').replace(/[\s\-\.]/g,'') === '';
       if(soloNums){
-        const nums = (t.match(NUM_RE) || []).map(parseAR).filter(v=>v!==null);
+        const nums = numMatches(t).map(parseAR).filter(v=>v!==null);
         if(nums.length){
           if(current && current.nums.length === 0){ current.nums = nums; }
           else { pendingNums = nums; }
@@ -385,7 +406,7 @@ function parseMovements(lines, bankId){
       }
       // continuación (sufijo) o corte
       if(skipLine(t, low)){ movs.push(current); current = null; continue; }
-      const nums = t.match(NUM_RE) || [];
+      const nums = numMatches(t);
       const extra = t.replace(NUM_RE,'').replace(/\s+/g,' ').trim();
       if(nums.length && current.nums.length === 0){
         current.nums = nums.map(parseAR).filter(v=>v!==null);
