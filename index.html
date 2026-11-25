@@ -127,7 +127,7 @@ footer{margin-top:40px;font-size:12px;color:var(--muted);border-top:1px solid va
   <div class="count" id="count"></div>
 </div>
 
-<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v7</span></footer>
+<footer>El importe usa signo: negativo = débito, positivo = crédito. La columna «imputacion» se asigna por palabras clave y conviene revisarla. Si un banco cambia el diseño de su resumen, el conversor puede requerir ajuste. <span style="float:right;font-family:'JetBrains Mono',monospace">v8</span></footer>
 </div>
 
 <script>
@@ -225,13 +225,22 @@ async function pdfToLines(file){
     for(const it of tc.items){
       if(!it.str.trim()) continue;
       // normalizar guiones unicode (− U+2212, – U+2013, — U+2014) a '-' ASCII (ej. Credicoop usa U+2212 para negativos)
-      const s = it.str.replace(/[−–—]/g, '-');
+      const s = it.str.replace(/[−–—]/g, '-').replace(/^-\s+\$/, '-$'); // "- $ 2.001,00" en un solo texto = negativo
       const y = Math.round(it.transform[5] / 2.5) * 2.5;
       (rows[y] = rows[y] || []).push({x: it.transform[4], w: it.width || 0, s});
     }
     const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
     for(const y of ys){
-      const parts = rows[y].sort((a,b)=>a.x-b.x);
+      const raw = rows[y].sort((a,b)=>a.x-b.x);
+      // unir un "-" pegado a un importe con $ (ej. saldo negativo "- $ 2.001,00" en Brubank);
+      // un "-" suelto lejos del importe es solo un casillero vacío y no se toca
+      const parts = [];
+      for(let i=0;i<raw.length;i++){
+        const c = raw[i], n = raw[i+1];
+        if(c.s === '-' && n && /^\$/.test(n.s) && (n.x - (c.x + c.w)) < 6){
+          parts.push({x:c.x, w:(n.x + n.w) - c.x, s:'-' + n.s}); i++;
+        } else parts.push(c);
+      }
       const text = parts.map(p=>p.s).join(' ').replace(/\s+/g,' ').trim();
       if(text) lines.push({text, parts});
     }
@@ -241,6 +250,9 @@ async function pdfToLines(file){
 
 /* ---------- detección de banco ---------- */
 function detectBank(lines, filename){
+  // Brubank: el nombre aparece recién en el pie del PDF y las descripciones pueden nombrar a Mercado Pago
+  const full = lines.map(l=>l.text).join(' ').toLowerCase();
+  if(full.includes('brubank s.a') || full.includes('@brubank')) return 'brubank';
   const all = (lines.slice(0,80).map(l=>l.text).join(' ') + ' ' + filename).toLowerCase();
   for(const [id,cfg] of Object.entries(BANKS)){
     if(cfg.keys.some(k => all.includes(k))) return id;
@@ -336,8 +348,8 @@ function parseMovements(lines, bankId){
         const nums = numMatches(t);
         if(nums && nums.length) v = parseAR(nums[nums.length-1]);
       }
-      if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; }
       if(current){ movs.push(current); current = null; }
+      if(v !== null){ if(saldoInicial === null) saldoInicial = v; saldoPrev = v; movs.push({marker:true, ini:v}); }
       pendingNums = null;
       pendingDesc = null;
       capturing = true;
@@ -345,7 +357,7 @@ function parseMovements(lines, bankId){
     }
     // cerrar zona solo si ya capturé algún movimiento (evita cortar cuando el bloque
     // "Resumen" con Saldo Inicial/Final está ARRIBA de la tabla, como en Brubank)
-    if(hasZones && capturing && movs.length > 0 && ZONE_END.some(k => low.includes(k))){
+    if(hasZones && capturing && movs.some(m=>!m.marker) && ZONE_END.some(k => low.includes(k))){
       if(current){ movs.push(current); current = null; }
       pendingNums = null;
       pendingDesc = null;
@@ -423,7 +435,9 @@ function parseMovements(lines, bankId){
   // resolver importe/saldo con saldo corrido
   const out = [];
   let warns = 0;
+  saldoPrev = null;
   for(const mv of movs){
+    if(mv.marker){ saldoPrev = mv.ini; continue; }
     let importe = null, saldo = null;
     if(mv.nums.length < 2 && mv.importeCol != null){
       // el banco separa débitos y créditos en columnas: el signo viene de la posición
